@@ -7,56 +7,76 @@ export default async function handler(req, res) {
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   try {
-    // snapsave.app
-    const form = new URLSearchParams({ url });
-    const r = await fetch('https://snapsave.app/action.php?lang=en', {
+    // fdownloader.net - reliable FB downloader
+    const r = await fetch('https://fdownloader.net/api/ajaxSearch', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Referer': 'https://snapsave.app/',
-        'User-Agent': 'Mozilla/5.0',
+        'Referer': 'https://fdownloader.net/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'X-Requested-With': 'XMLHttpRequest',
       },
-      body: form.toString(),
+      body: new URLSearchParams({ q: url, lang: 'en', cftoken: '' }).toString(),
     });
-    const d = await r.json();
-    const html = d.data || '';
 
+    const text = await r.text();
+    let d;
+    try { d = JSON.parse(text); } catch { throw new Error('Parse failed'); }
+
+    if (d.status !== 'ok') throw new Error('fdownloader failed');
+
+    const html = d.data || '';
     const formats = [];
     const seen = new Set();
-    const linkRe = /href="(https?:\/\/[^"]+)"/g;
-    const labelRe = /<[^>]*>([^<]*(?:HD|SD|High|Normal|Standard)[^<]*)<\/[^>]*>/gi;
 
-    // Simple regex parse
-    const hdMatch = html.match(/href="(https?:\/\/[^"]+)"[^>]*>[^<]*(?:HD|High)[^<]*</i) ||
-                    html.match(/HD[^<]*href="(https?:\/\/[^"]+)"/i);
-    const sdMatch = html.match(/href="(https?:\/\/[^"]+)"[^>]*>[^<]*(?:SD|Normal|Standard)[^<]*</i) ||
-                    html.match(/(?:SD|Normal)[^<]*href="(https?:\/\/[^"]+)"/i);
-
-    // Extract all https links from html
+    // Extract download links
+    const linkRe = /href="(https?:\/\/[^"]+)"[^>]*>([^<]*)/g;
     let match;
-    const allLinks = [];
     while ((match = linkRe.exec(html)) !== null) {
-      if (match[1].includes('fbcdn') || match[1].includes('facebook') || match[1].includes('snapsave')) {
-        allLinks.push(match[1]);
+      const href = match[1];
+      const text2 = match[2].trim().toLowerCase();
+      if (!href.includes('fbcdn') && !href.includes('facebook') && !href.includes('fdownloader')) continue;
+      
+      const label = text2.includes('hd') || text2.includes('high') ? 'MP4 HD' : 'MP4 SD';
+      if (!seen.has(label)) {
+        seen.add(label);
+        formats.push({ label, ext: 'mp4', url: href, sub: label.includes('HD') ? 'High quality' : 'Standard quality' });
       }
     }
 
-    if (allLinks.length >= 2) {
-      formats.push({ label: 'MP4 HD', ext: 'mp4', url: allLinks[0], sub: 'High quality' });
-      formats.push({ label: 'MP4 SD', ext: 'mp4', url: allLinks[1], sub: 'Standard quality' });
-    } else if (allLinks.length === 1) {
-      formats.push({ label: 'MP4 Video', ext: 'mp4', url: allLinks[0], sub: '' });
-    }
+    if (formats.length === 0) throw new Error('No links found');
 
-    if (formats.length === 0) throw new Error('No download links found — video may be private');
-
-    return res.json({
-      title: 'Facebook Video',
-      thumb: null,
-      platform: 'facebook',
-      formats,
-    });
+    return res.json({ title: 'Facebook Video', thumb: null, platform: 'facebook', formats });
   } catch (e) {
-    return res.status(500).json({ error: e.message });
+    // Fallback: getfvid
+    try {
+      const r2 = await fetch(`https://getfvid.com/downloader?url=${encodeURIComponent(url)}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Referer': 'https://getfvid.com/',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+      const html = await r2.text();
+      const formats = [];
+      const seen = new Set();
+
+      const re = /href="(https?:\/\/(?:[^"]*fbcdn[^"]*|[^"]*facebook[^"]*))"/g;
+      let m;
+      let i = 0;
+      while ((m = re.exec(html)) !== null && i < 4) {
+        const label = i === 0 ? 'MP4 HD' : 'MP4 SD';
+        if (!seen.has(label)) {
+          seen.add(label);
+          formats.push({ label, ext: 'mp4', url: m[1], sub: '' });
+          i++;
+        }
+      }
+
+      if (formats.length === 0) throw new Error('No FB links found');
+      return res.json({ title: 'Facebook Video', thumb: null, platform: 'facebook', formats });
+    } catch (e2) {
+      return res.status(500).json({ error: 'Facebook: ' + e2.message });
+    }
   }
 }
