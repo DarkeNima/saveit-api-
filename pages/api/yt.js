@@ -10,47 +10,61 @@ export default async function handler(req, res) {
   if (!m) return res.status(400).json({ error: 'Invalid YouTube URL' });
   const vid = m[1];
 
-  try {
-    const r = await fetch('https://save-from.net/api/convert', {
-      method: 'POST',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ url }),
-      signal: AbortSignal.timeout(15000),
-    });
+  const instances = [
+    'https://inv.nadeko.net',
+    'https://invidious.privacyredirect.com',
+    'https://invidious.nerdvpn.de',
+    'https://iv.datura.network',
+    'https://invidious.io.lol',
+  ];
 
-    const data = await r.json();
-    const formats = [];
-    const seen = new Set();
+  for (const inst of instances) {
+    try {
+      const r = await fetch(`${inst}/api/v1/videos/${vid}?fields=title,author,lengthSeconds,formatStreams,adaptiveFormats`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.error || !d.title) continue;
 
-    for (const item of (data.url || [])) {
-      const furl = item.url || item.urls?.[0];
-      if (!furl) continue;
-      const isAudio = item.ext === 'mp3' || (item.id||'').includes('mp3');
-      const label = isAudio ? 'MP3 Audio' : `MP4 ${item.id || ''}`.trim();
-      if (!seen.has(label)) {
-        seen.add(label);
-        formats.push({ label, ext: isAudio ? 'mp3' : 'mp4', url: furl, sub: item.size || '' });
+      const formats = [];
+
+      // formatStreams = already muxed video+audio (360p, 720p)
+      for (const f of (d.formatStreams || [])) {
+        if (f.url && f.qualityLabel) {
+          formats.push({
+            label: `MP4 ${f.qualityLabel}`,
+            ext: 'mp4',
+            url: f.url,
+            sub: f.qualityLabel,
+          });
+        }
       }
-    }
 
-    formats.sort((a, b) => {
-      if (a.label === 'MP3 Audio') return 1;
-      if (b.label === 'MP3 Audio') return -1;
-      return (parseInt(b.label.match(/\d+/)?.[0]||0)) - (parseInt(a.label.match(/\d+/)?.[0]||0));
-    });
+      // adaptiveFormats = audio only
+      for (const f of (d.adaptiveFormats || [])) {
+        if (f.type?.includes('audio/mp4') && !formats.find(x => x.label === 'MP3 Audio')) {
+          formats.push({ label: 'MP3 Audio', ext: 'mp3', url: f.url, sub: 'Audio only' });
+        }
+      }
 
-    if (formats.length === 0) throw new Error('No formats found');
+      if (formats.length === 0) continue;
 
-    return res.json({
-      title: data.meta?.title || 'YouTube Video',
-      thumb: data.meta?.thumb || `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`,
-      platform: 'youtube',
-      formats: formats.slice(0, 6),
-    });
-  } catch (e) {
-    return res.status(500).json({ error: 'YouTube: ' + e.message });
+      const dur = d.lengthSeconds
+        ? `${Math.floor(d.lengthSeconds/60)}:${String(d.lengthSeconds%60).padStart(2,'0')}`
+        : null;
+
+      return res.json({
+        title: d.title,
+        thumb: `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`,
+        author: d.author,
+        duration: dur,
+        platform: 'youtube',
+        formats: formats.slice(0, 6),
+      });
+    } catch {}
   }
+
+  return res.status(500).json({ error: 'YouTube: All instances failed. Try again later.' });
 }
